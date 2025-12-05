@@ -2,4 +2,7 @@ mcp
 alpaca-trade-api
 uvicorn
 requests
+fastmcp>=2.0.0
+alpaca-trade-api>=3.0.0
+mcp>=1.0.0
 
