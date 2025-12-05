@@ -20,7 +20,8 @@ from typing import List
 
 import alpaca_trade_api as tradeapi
 
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -286,16 +287,17 @@ if __name__ == "__main__":
     import sys
 
     if "--http" in sys.argv:
-        # Streamable HTTP transport (for Render / web)
+        # HTTP transport for Render / Claude Mobile
         port = int(os.getenv("PORT", "8000"))
-        logger.info("Starting Alpaca MCP Server (HTTP / Streamable)...")
-        logger.info(f"Listening on 0.0.0.0:{port}")
+        logger.info(
+            f"Starting Alpaca MCP Server (HTTP) on 0.0.0.0:{port}..."
+        )
         mcp.run(
-            transport="streamable-http",
+            transport="http",  # FastMCP HTTP transport
             host="0.0.0.0",
             port=port,
         )
     else:
-        # Default: stdio (for Claude Desktop)
+        # Default: stdio transport for Claude Desktop
         logger.info("Starting Alpaca MCP Server (stdio)...")
         mcp.run()
