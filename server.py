@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Alpaca MCP Server
+Simple Alpaca MCP Server using FastMCP
 
 Tools exposed:
 - get_quote
@@ -15,23 +15,19 @@ Works with both paper and live trading depending on ALPACA_BASE_URL.
 
 import os
 import json
-import asyncio
 import logging
-from typing import Any, Dict, List, Union
+from typing import List
 
 import alpaca_trade_api as tradeapi
 
-from mcp.server import Server
-from mcp.types import Tool, TextContent
-from mcp.server.http import StreamableHTTPSessionManager
-import uvicorn
+from mcp.server.fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("alpaca-mcp-server")
+logger = logging.getLogger("alpaca-mcp-service")
 
 # ---------------------------------------------------------------------------
 # Environment / config
@@ -116,104 +112,18 @@ def validate_symbol(symbol: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# MCP server
+# FastMCP server
 # ---------------------------------------------------------------------------
 
-app = Server("alpaca-mcp-service")
-
-TextLike = TextContent  # for type alias
-
-
-@app.list_tools()
-async def list_tools() -> List[Tool]:
-    return [
-        Tool(
-            name="get_quote",
-            description="Get real-time quote for a symbol from Alpaca.",
-            inputSchema={
-                "type": "object",
-                "properties": {"symbol": {"type": "string"}},
-                "required": ["symbol"],
-            },
-        ),
-        Tool(
-            name="get_account",
-            description="Get Alpaca account information.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="get_positions",
-            description="Get all open positions.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="place_order",
-            description="Place a market order with basic risk checks.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string"},
-                    "qty": {"type": "integer"},
-                    "side": {"type": "string", "enum": ["buy", "sell"]},
-                    "time_in_force": {
-                        "type": "string",
-                        "enum": ["day", "gtc"],
-                        "default": "day",
-                    },
-                },
-                "required": ["symbol", "qty", "side"],
-            },
-        ),
-        Tool(
-            name="close_position",
-            description="Close the entire position for a given symbol.",
-            inputSchema={
-                "type": "object",
-                "properties": {"symbol": {"type": "string"}},
-                "required": ["symbol"],
-            },
-        ),
-        Tool(
-            name="analyze_portfolio",
-            description="Summarize portfolio P&L and positions (text only).",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-    ]
-
-
-@app.call_tool()
-async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextLike]:
-    try:
-        if name == "get_quote":
-            return await get_quote(arguments["symbol"])
-        if name == "get_account":
-            return await get_account()
-        if name == "get_positions":
-            return await get_positions()
-        if name == "place_order":
-            return await place_order(
-                symbol=arguments["symbol"],
-                qty=arguments["qty"],
-                side=arguments["side"],
-                time_in_force=arguments.get("time_in_force", "day"),
-            )
-        if name == "close_position":
-            return await close_position(arguments["symbol"])
-        if name == "analyze_portfolio":
-            return await analyze_portfolio()
-
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
-    except Exception as e:
-        logger.exception("Tool %s failed", name)
-        return [TextContent(type="text", text=f"Error running tool {name}: {e}")]
-
+mcp = FastMCP("alpaca-mcp-service")
 
 # ---------------------------------------------------------------------------
-# Tool implementations
+# Tools
 # ---------------------------------------------------------------------------
 
 
-async def get_quote(symbol: str) -> List[TextLike]:
+@mcp.tool(description="Get real-time quote for a symbol from Alpaca.")
+async def get_quote(symbol: str) -> str:
     symbol = symbol.upper()
     try:
         snap = alpaca.get_snapshot(symbol)
@@ -223,12 +133,13 @@ async def get_quote(symbol: str) -> List[TextLike]:
             else None
         )
         data = {"symbol": symbol, "price": price}
-        return [TextContent(type="text", text=json.dumps(data, indent=2))]
+        return json.dumps(data, indent=2)
     except Exception as e:
-        return [TextContent(type="text", text=f"Error getting quote: {e}")]
+        return f"Error getting quote: {e}"
 
 
-async def get_account() -> List[TextLike]:
+@mcp.tool(description="Get Alpaca account information.")
+async def get_account() -> str:
     try:
         acct = alpaca.get_account()
         data = {
@@ -237,12 +148,13 @@ async def get_account() -> List[TextLike]:
             "cash": float(acct.cash),
             "buying_power": float(acct.buying_power),
         }
-        return [TextContent(type="text", text=json.dumps(data, indent=2))]
+        return json.dumps(data, indent=2)
     except Exception as e:
-        return [TextContent(type="text", text=f"Error getting account: {e}")]
+        return f"Error getting account: {e}"
 
 
-async def get_positions() -> List[TextLike]:
+@mcp.tool(description="Get all open positions.")
+async def get_positions() -> str:
     try:
         positions = alpaca.list_positions()
         data = [
@@ -256,31 +168,26 @@ async def get_positions() -> List[TextLike]:
             }
             for p in positions
         ]
-        return [TextContent(type="text", text=json.dumps(data, indent=2))]
+        return json.dumps(data, indent=2)
     except Exception as e:
-        return [TextContent(type="text", text=f"Error getting positions: {e}")]
+        return f"Error getting positions: {e}"
 
 
+@mcp.tool(description="Place a market order with basic risk checks.")
 async def place_order(
-    symbol: str, qty: int, side: str, time_in_force: str
-) -> List[TextLike]:
+    symbol: str, qty: int, side: str, time_in_force: str = "day"
+) -> str:
     symbol = symbol.upper()
 
     if not validate_symbol(symbol):
-        return [
-            TextContent(
-                type="text",
-                text=f"ERROR: {symbol} is not in the allowed universe (risk check failed).",
-            )
-        ]
+        return (
+            f"ERROR: {symbol} is not in the allowed universe (risk check failed)."
+        )
 
     if qty > MAX_POSITION_SIZE:
-        return [
-            TextContent(
-                type="text",
-                text=f"ERROR: qty={qty} exceeds MAX_POSITION_SIZE={MAX_POSITION_SIZE}",
-            )
-        ]
+        return (
+            f"ERROR: qty={qty} exceeds MAX_POSITION_SIZE={MAX_POSITION_SIZE}"
+        )
 
     try:
         snap = alpaca.get_snapshot(symbol)
@@ -290,19 +197,14 @@ async def place_order(
             else None
         )
         if not price:
-            return [TextContent(type="text", text="ERROR: Could not fetch latest price")]
+            return "ERROR: Could not fetch latest price"
 
         notional = qty * price
         if side.lower() == "buy" and notional > MAX_POSITION_VALUE:
-            return [
-                TextContent(
-                    type="text",
-                    text=(
-                        f"ERROR: Order value ${notional:,.2f} exceeds "
-                        f"MAX_POSITION_VALUE ${MAX_POSITION_VALUE:,.2f}"
-                    ),
-                )
-            ]
+            return (
+                f"ERROR: Order value ${notional:,.2f} exceeds "
+                f"MAX_POSITION_VALUE ${MAX_POSITION_VALUE:,.2f}"
+            )
 
         order = alpaca.submit_order(
             symbol=symbol,
@@ -320,28 +222,30 @@ async def place_order(
             "side": order.side,
             "created_at": str(order.created_at),
         }
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return json.dumps(result, indent=2)
     except Exception as e:
-        return [TextContent(type="text", text=f"ERROR placing order: {e}")]
+        return f"ERROR placing order: {e}"
 
 
-async def close_position(symbol: str) -> List[TextLike]:
+@mcp.tool(description="Close entire position for a given symbol.")
+async def close_position(symbol: str) -> str:
     symbol = symbol.upper()
     try:
         alpaca.close_position(symbol)
-        return [TextContent(type="text", text=f"Closed position in {symbol}.")]
+        return f"Closed position in {symbol}."
     except Exception as e:
-        return [TextContent(type="text", text=f"Error closing position: {e}")]
+        return f"Error closing position: {e}"
 
 
-async def analyze_portfolio() -> List[TextLike]:
+@mcp.tool(description="Summarize portfolio P&L and positions (text only).")
+async def analyze_portfolio() -> str:
     """Text-only portfolio summary."""
     try:
         positions = alpaca.list_positions()
         if not positions:
-            return [TextContent(type="text", text="No open positions.")]
+            return "No open positions."
 
-        symbols = [p.symbol for p in positions]
+        symbols: List[str] = [p.symbol for p in positions]
         values = [float(p.market_value) for p in positions]
         pnl = [float(p.unrealized_pl) for p in positions]
         pnl_pct = [float(p.unrealized_plpc) * 100 for p in positions]
@@ -369,49 +273,23 @@ async def analyze_portfolio() -> List[TextLike]:
                 f"- {sym}: value=${v:,.2f}, P&L=${p:,.2f} ({pct:+.2f}%)"
             )
 
-        return [TextContent(type="text", text="\n".join(lines))]
+        return "\n".join(lines)
     except Exception as e:
-        return [TextContent(type="text", text=f"Error analyzing portfolio: {e}")]
+        return f"Error analyzing portfolio: {e}"
 
 
 # ---------------------------------------------------------------------------
-# Entry points: stdio and HTTP
+# Entrypoint: stdio vs HTTP
 # ---------------------------------------------------------------------------
-
-
-async def main_stdio() -> None:
-    """StdIO mode – used by Claude Desktop."""
-    from mcp.server.stdio import stdio_server
-
-    logger.info("Starting Alpaca MCP Server (stdio mode)...")
-
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream, write_stream, app.create_initialization_options()
-        )
-
-
-async def run_http_server() -> None:
-    """HTTP mode – used by Claude web/mobile."""
-    port = int(os.getenv("PORT", "8000"))
-
-    logger.info("Starting Alpaca MCP Server (HTTP mode)...")
-    logger.info(f"Listening on 0.0.0.0:{port}")
-
-    manager = StreamableHTTPSessionManager(app, stateless=False)
-
-    uvicorn.run(
-        manager.as_asgi_app(),
-        host="0.0.0.0",
-        port=port,
-    )
-
 
 if __name__ == "__main__":
     import sys
 
     if "--http" in sys.argv:
-        asyncio.run(run_http_server())
+        # Streamable HTTP transport (for Render / web)
+        logger.info("Starting Alpaca MCP Server (HTTP / Streamable)...")
+        mcp.run(transport="streamable-http")
     else:
-        asyncio.run(main_stdio())
-
+        # Default: stdio (for Claude Desktop)
+        logger.info("Starting Alpaca MCP Server (stdio)...")
+        mcp.run()
