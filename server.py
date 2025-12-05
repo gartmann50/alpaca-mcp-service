@@ -287,8 +287,14 @@ if __name__ == "__main__":
 
     if "--http" in sys.argv:
         # Streamable HTTP transport (for Render / web)
+        port = int(os.getenv("PORT", "8000"))
         logger.info("Starting Alpaca MCP Server (HTTP / Streamable)...")
-        mcp.run(transport="streamable-http")
+        logger.info(f"Listening on 0.0.0.0:{port}")
+        mcp.run(
+            transport="streamable-http",
+            host="0.0.0.0",
+            port=port,
+        )
     else:
         # Default: stdio (for Claude Desktop)
         logger.info("Starting Alpaca MCP Server (stdio)...")
