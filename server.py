@@ -16,9 +16,10 @@ Works with both paper and live trading depending on ALPACA_BASE_URL.
 import os
 import json
 import logging
-from typing import List
+from typing import List, Optional
 
 import alpaca_trade_api as tradeapi
+import requests  # NEW: for sending analytics to your app
 
 from fastmcp import FastMCP
 
@@ -58,11 +59,65 @@ MAX_POSITION_SIZE = int(os.getenv("MAX_POSITION_SIZE", "1000"))
 MAX_POSITION_VALUE = float(os.getenv("MAX_POSITION_VALUE", "10000"))
 ALLOWED_SYMBOLS_FILE = os.getenv("ALLOWED_SYMBOLS_FILE", "data/universe_liquid.txt")
 
+# NEW: Analytics config for your IW Positions app
+ANALYTICS_ENDPOINT = os.getenv("ANALYTICS_ENDPOINT")  # e.g. https://iw-positions-app.vercel.app/api/analytics
+ANALYTICS_TOKEN = os.getenv("ANALYTICS_TOKEN")        # should match APP_TOKEN in the app
+
 logger.info("=== Alpaca MCP Server config ===")
 logger.info(f"ALPACA_BASE_URL: {ALPACA_BASE_URL}")
 logger.info(f"ALPACA key present: {bool(ALPACA_KEY)}")
 logger.info(f"ALPACA secret present: {bool(ALPACA_SECRET)}")
+logger.info(f"ANALYTICS_ENDPOINT set: {bool(ANALYTICS_ENDPOINT)}")
 logger.info("================================")
+
+
+# ---------------------------------------------------------------------------
+# Analytics helper
+# ---------------------------------------------------------------------------
+
+def send_analytics(event_type: str, data: dict, chart_base64: Optional[str] = None) -> None:
+    """
+    Send analytics payload to the IW Positions app.
+
+    The app expects:
+      {
+        "type": "portfolio_analysis" | "price_chart" | ...,
+        "data": { ...metrics... },
+        "chart_data": "<base64 png>" | null
+      }
+    """
+    if not ANALYTICS_ENDPOINT:
+        logger.debug("ANALYTICS_ENDPOINT not set; skipping analytics send")
+        return
+
+    payload = {
+        "type": event_type,
+        "data": data,
+        "chart_data": chart_base64,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    if ANALYTICS_TOKEN:
+        headers["x-app-token"] = ANALYTICS_TOKEN
+
+    try:
+        resp = requests.post(
+            ANALYTICS_ENDPOINT,
+            json=payload,
+            headers=headers,
+            timeout=5,
+        )
+        if resp.ok:
+            logger.info("Analytics event '%s' sent successfully", event_type)
+        else:
+            logger.warning(
+                "Analytics send failed (%s): %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+    except Exception as e:
+        logger.warning("Analytics send error: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Clients
@@ -240,7 +295,7 @@ async def close_position(symbol: str) -> str:
 
 @mcp.tool(description="Summarize portfolio P&L and positions (text only).")
 async def analyze_portfolio() -> str:
-    """Text-only portfolio summary."""
+    """Text-only portfolio summary + send analytics to the app."""
     try:
         positions = alpaca.list_positions()
         if not positions:
@@ -273,6 +328,27 @@ async def analyze_portfolio() -> str:
             lines.append(
                 f"- {sym}: value=${v:,.2f}, P&L=${p:,.2f} ({pct:+.2f}%)"
             )
+
+        # --- NEW: send compact analytics payload to your app ---
+        analytics_payload = {
+            "total_value": total_value,
+            "total_pnl": total_pnl,
+            "total_pnl_pct": total_pnl_pct,
+            "position_count": len(positions),
+            "winners": winners,
+            "losers": losers,
+            "positions": [
+                {
+                    "symbol": sym,
+                    "market_value": v,
+                    "unrealized_pl": p,
+                    "unrealized_plpc": pct,
+                }
+                for sym, v, p, pct in zip(symbols, values, pnl, pnl_pct)
+            ],
+        }
+
+        send_analytics("portfolio_analysis", analytics_payload)
 
         return "\n".join(lines)
     except Exception as e:
